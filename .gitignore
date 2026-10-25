@@ -1,0 +1,112 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Environments ---
+.venv/
+.venv-*/
+venv/
+env/
+.python-version
+
+# --- Caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+htmlcov/
+.coverage
+.coverage.*
+
+# --- Model weights & datasets (never commit; re-fetch from HF) ---
+*.safetensors
+*.ckpt
+*.pth
+*.pt
+*.bin
+*.h5
+*.hdf5
+# Leading slash matters: a bare `data/` also matches src/data/, which would silently
+# exclude the pair-generation module from the repo.
+/data/
+/datasets/
+/LIBERO/
+/third_party/
+.cache/
+hf_cache/
+
+# --- Results: large blobs are ignored, small metrics/configs are NOT ---
+# Rationale (CLAUDE.md §11): every run dumps its resolved config + metrics so a
+# result is reproducible from git alone. Cached activations are large and derived,
+# so they stay local. The negated patterns below must come after the blanket ignore.
+results/**
+!results/**/
+!results/**/config.yaml
+!results/**/metrics.json
+!results/**/summary.md
+!results/.gitkeep
+!results/README.md
+!results/*.json
+
+# Cached activations are always derived and always large.
+results/**/activations/
+results/**/cache/
+*.npy
+*.npz
+
+# --- Figures: generated from results/ by scripts/make_figures.py ---
+# PDFs are tracked so the paper builds from a clean clone; PNGs are scratch.
+figures/scratch/
+figures/*.png
+
+# --- Stimulus sets ARE released artifacts: do not ignore ---
+# (src/data outputs land in stimuli/ and are intentionally tracked)
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+*.key
+wandb/
+
+# Stray run logs (runs write to results/<run_id>/ instead)
+*.log
+
+# NeurIPS style file: download from neurips.cc into paper/. Not redistributable,
+# and vendoring it invites the failure we already hit -- a file with the right name
+# but the wrong contents (a 1990s nips10submit_e.sty) that fails obscurely.
+paper/neurips_2026.sty
+
+# LaTeX build artefacts
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.pdf
+
+# Overleaf snapshots, dropped here for merging. Never the source of truth --
+# two main.tex files in one repo is the drift problem we keep hitting.
+paper/overleaf/
+
+# Publish the course report and compact measured artifacts. Large caches are release assets.
+!paper/CS1998*.pdf
+!results/cs1998_full/*.json
+!results/cs1998_full/*.yaml
+!results/cs1998_full/*.csv
+!results/cs1998_full/*.png
+/output/

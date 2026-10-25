@@ -1,0 +1,657 @@
+% Paper A -- VLM4RWD (Aug 30, 8 pp) / RoboPAD (Sep 10, 9 pp). Both non-archival.
+%
+% Build:  pdflatex main && bibtex main && pdflatex main && pdflatex main
+%
+% REQUIRES neurips_2026.sty in this directory (download from neurips.cc; it is not
+% redistributable here). Without it LaTeX will fail on the \usepackage line below.
+%
+% Track option: dblblindworkshop = workshop with double-blind review, which is what
+% RoboPAD, VLM4RWD and Interpretability-for-Discovery all use. Switch to
+% [dblblindworkshop, final] only after acceptance.
+% ===========================================================================
+% TWO SWITCHES: content length, and venue.
+%
+% Both target venues take the full version, so \longtrue is the default. Neither counts
+% references or appendices, and the artifacts and extended-results sections are
+% marked as an appendix below, so main content lands around 7 pages for both:
+%   VLM4RWD   Aug 30, 8 pages excluding references and appendices
+%   RoboPAD   Sep 10, 9 pages of main content, references and appendix unlimited
+% Set \longfalse only if a venue turns out to want the compressed version; it
+% drops the measurement-artifacts and extended-results sections.
+% ===========================================================================
+\newif\iflong
+\longtrue           % full version -- fits both venues
+
+% Venue only affects the footnote title. Pick one.
+\newif\ifrobopad
+\robopadtrue        % \robopadtrue for RoboPAD, \robopadfalse for VLM4RWD
+
+\documentclass{article}
+\usepackage[dblblindworkshop]{neurips_2026}
+
+% The workshop template requires BOTH \title and \workshoptitle. The venue differs
+% between the two builds, so it follows the same switch.
+\ifrobopad
+  \workshoptitle{Robot Foundation Models: Post-Pretraining Adaptation, Reasoning and Evaluation (RoboPAD)}
+\else
+  \workshoptitle{Vision-Language Models for Real-World Deployment (VLM4RWD)}
+\fi
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{enumitem}
+% amsmath, not just amsfonts: \operatorname and \lVert in the competence-gate display
+% are amsmath macros and amsfonts does not provide them.
+\usepackage{amsmath}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{graphicx}
+% Figures live at the repo root (figures/), one level above this file, but on Overleaf
+% they are usually uploaded as a sibling folder. List both so the same source compiles
+% in either layout instead of failing on a missing file.
+\graphicspath{{../figures/}{figures/}{./}}
+
+\title{Partial Composition, Not Blind Substitution:\\
+Decomposing a Grounding Failure in Vision-Language-Action Models}
+
+\author{%
+  Anonymous \\
+  % Filled in for the camera-ready only; submission is double-blind.
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Robots controlled by vision-language-action models are given their tasks in ordinary English,
+and the instruction is the only channel through which a user can change what such a robot does.
+These models now perform well on standard manipulation benchmarks, yet a growing body of
+evidence finds that they lean on visual regularities rather than the words: they under-use the
+instruction, and they fail on object and place combinations they were never trained
+on~\citep{brittle,scaleup}. What that evidence does not settle is \emph{why}, because several
+different mechanisms predict the same aggregate failure rate. We test those explanations against
+each other using matched controls, and ask whether standard interpretability methods can locate
+the failure inside the network.
+
+Using a LIBERO-finetuned SmolVLA, we show the policy identical camera images paired with
+instructions that differ in exactly one word. The failure is narrower than a
+``vision overrides language'' account predicts. When the arm is already carrying an object
+toward one goal and the command names a different one, the policy follows the command on
+$94.6\%$ of trials $[91.6, 97.4]$, and on $74.5\%$ $[68.8, 80.1]$ of neutral
+states. Failure appears only for untrained word combinations, and the
+resulting errors are structured: they favour places the object was previously paired with, by
+$11$ and $10$ percentage points above a uniform choice among the incorrect answers. The
+behaviour is nevertheless not a fixed object-conditioned destination lookup, because which
+place the policy heads toward still depends on which place the command names, selected on
+$34$ to $67\%$ of untrained trials. Paraphrasing the instruction leaves the effect in place on
+both checkpoints, though one of them shows sharp, destination-specific sensitivity to the exact
+wording, which we report as evidence that surface-form memorisation is a separable failure mode.
+
+We then report two negative results together with the controls that establish them. A
+130-site causal patching sweep appears to localize the failure, until the identical sweep on a
+contrast containing no failure reproduces the same profile; no site survives correction. A
+linear probe finds the instruction encoded in the vision-language backbone, but its results
+inside the action expert reverse between checkpoints. We release the stimulus generator, a
+competence gate that finds only $2$ of $8$ public checkpoints usable, and seven measurement
+artifacts that produced convincing but incorrect results in our own pipeline.
+\end{abstract}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=.99\linewidth]{figures/fig1_schematic.pdf}
+\caption{\textbf{The design, and what it returns.} \textbf{(a)} A matched trial pair is one
+camera frame and robot state with two instructions differing in a single word. The same policy
+is run on each, so any difference between the two predicted action chunks is attributable to
+that word, and we score whether the motion follows it. The scoring rule differs by setting: for
+neutral and conflict it compares each chunk against the demonstrated trajectory, and for
+composition it asks which destination anchor the motion heads toward (\S\ref{sec:exp}). The same
+paired test is run in all three. \textbf{(b)} Language is not
+overridden by vision: when the arm is already carrying an object toward one goal and the command
+names another, the policy follows the command more often than it does from a neutral pre-grasp
+state. \textbf{(c)} It is composition that breaks. On an object--place pairing never
+demonstrated in training the policy degrades sharply, and for one pairing almost completely,
+though which place it heads toward still depends on the place the command names, so the
+behaviour is not a fixed object-conditioned lookup. All values from
+checkpoint~A.}
+\label{fig:schematic}
+\end{figure}
+
+\section{Introduction}
+\label{sec:intro}
+
+VLAs map a camera image and a language instruction to robot actions. A growing behavioural
+literature reports that they under-use the language and default to visual
+priors~\citep{better,icbench,liberocf,robosem}. The instruction is the only channel through
+which a user can change what the policy does, so a policy that ignores it cannot be redirected.
+A kitchen robot that has learned to place bowls on the counter will keep doing so when asked to
+place one in the sink, and no amount of rephrasing will help.
+
+\citet{brittle} demonstrate the compositional case on SmolVLA, showing that held-out
+object--location pairings fail because performance depends on correlations that do not
+transfer, and \citet{scaleup} report the same across six models. Building on that result, we
+address two questions. First, which competing accounts of the failure survive a matched
+control? Second, what does it take to measure such a failure without arriving at a false
+conclusion?
+
+The second question matters because every intuitive measurement we constructed produced an
+apparently clean and statistically significant number that later proved to be an artifact. In
+each case, the error surfaced only through a check capable of contradicting it.
+
+Figure~\ref{fig:schematic} gives the experimental logic. Our stimuli are minimal contrastive
+pairs: for each stored state we run the same policy on two instructions differing in exactly one
+object or destination word. The camera image and robot state stay fixed, so any difference
+between the two predicted action chunks is attributable to the changed word. We test the
+competing accounts with matched behavioural contrasts. A
+\emph{vision-dominance} account predicts failure when the visual context opposes the
+instruction; we observe the opposite, with the policy redirecting mid-trajectory on $94.6\%$ of
+trials. An \emph{attention-lapse} account predicts unstructured error; errors are instead biased
+toward the object's trained destinations by $10$ percentage points above chance. A fixed
+\emph{object-conditioned destination prior} predicts that the selected destination should not
+depend on the command; it does, with the named destination selected on $34$ to $67\%$ of
+untrained trials.
+
+A failure rate alone cannot separate these accounts, because all three predict the same
+aggregate degradation. What distinguishes them is the structure of the errors, which is why our
+contributions below are stated as eliminations rather than as a single headline number. What
+survives is command-dependent but substantially degraded behaviour on untrained pairings, which
+we read as evidence of partial compositional competence. That reading is an interpretation of
+behaviour rather than a measured mechanism: we do not claim to have identified an
+object$\leftrightarrow$destination binding mechanism, and establishing one would require showing
+that the relation is represented and causally drives the action, which our two mechanistic
+analyses (\S\ref{sec:exp}) do not achieve.
+
+\textbf{Contributions.}
+\begin{enumerate}[leftmargin=2em,itemsep=0pt,topsep=2pt]
+\item Evidence that the failure is not vision-dominance, strengthening a boundary
+  \citet{notallfeatures} draw: they report that language is ignored where visual context
+  uniquely identifies the task but essential where several goals share a scene. We show that on
+  LIBERO-Goal it survives a harder test than a mistaken prompt, holding when the arm is already
+  \emph{committed} to a different goal, with the commanded destination selected on $94.6\%$ of
+  trials.
+\item Evidence that it is not consistent with a fixed object-conditioned lookup either: on
+  undemonstrated pairings the selected destination still depends on which one was named. Richer
+  command-conditioned heuristics remain compatible with our data.
+\item A checkpoint competence gate: only 2 of 8 public LIBERO SmolVLA checkpoints are usable,
+  and four score worse than predicting an unrelated trajectory.
+\item Two negative results reported together with the controls that establish them, and seven
+  measurement artifacts that produced convincing but incorrect results in our own pipeline.
+\item A released, gate-validated contrastive stimulus generator, plus a reference-free
+  directional readout that makes undemonstrated commands scoreable.
+\end{enumerate}
+
+\section{Related work}
+\label{sec:related}
+
+\textbf{Compositional failure in VLAs.} \citet{brittle} report that held-out
+object--location pairings fail on SmolVLA and $\pi_{0.5}$, and \citet{scaleup} find memorised
+factor associations across six models; \citet{better,icbench,liberocf,robosem} document
+instruction under-use more broadly; two of them go on to propose mitigations, attention
+recalibration~\citep{icbench} and counterfactual-aware guidance~\citep{liberocf}.
+\emph{What is missing:} the failure is characterised as an aggregate rate, which cannot
+distinguish among the accounts that predict it, and the mitigations are proposed without one.
+We contribute the controlled contrasts that separate those accounts, and we test two candidate
+mechanistic analyses.
+
+\textbf{Interpretability of VLA grounding.} \citet{notallfeatures} run activation injection
+on six models including SmolVLA and establish that language sensitivity depends on task
+structure: where the visual context uniquely identifies the task the instruction is ignored
+(LIBERO-Object, $60$--$100\%$ regardless of the prompt), and where several goals share a scene
+it is essential (LIBERO-Goal, $94\%$ falling to $10\%$ under a wrong prompt). Our conflict
+regime sits inside the second case and pushes it further: the instruction still governs when the
+observation actively opposes it mid-trajectory, not merely when the prompt is wrong from the
+start. Their injections also steer behaviour toward the source task's trajectory on $99.8\%$ of
+episodes, evidence for spatially bound motor programs rather than an abstract task
+representation. Their layer interventions act on visual and full-pathway activations, so where
+\emph{language} influence is lost remains open; they name compositional instructions as future
+work.
+
+\textbf{Compositional generalisation.} Studied extensively in language-only and navigation
+settings~\citep{scan,gscan}, and much less in continuous-control policies whose output is a
+trajectory rather than a token sequence.
+
+\textbf{Binding.} Work on binding identifiers~\citep{bindingids,vlmbinding} predicts exactly
+the object$\leftrightarrow$attribute failure we observe, but characterises it mechanistically on
+the language-model side; the behavioural signature in an action policy has not been described.
+
+\textbf{VLA interpretability.} \citet{notallfeatures,vlatrace} localize features in VLAs.
+Such methods need a condition that reliably elicits the failure, which is what we supply. Our
+negative sweep also speaks to how readily these methods produce artifacts without matched
+controls.
+
+\section{Method}
+\label{sec:method}
+
+\textbf{Minimal contrastive pairs.} One observation, two instructions differing in exactly one
+referent. A pair ships only if it passes four gates, each with a regression test:
+\begin{enumerate}[leftmargin=2em,itemsep=0pt,topsep=2pt,label=(\roman*)]
+\item a single-edit word-level diff: one edit block, merged across filler words,
+  preposition-free span, verb unchanged;
+\item a shared scene;
+\item both instructions achievable from the state;
+\item counterbalanced source tasks.
+\end{enumerate}
+Two of these gates exist because naive implementations silently admitted invalid pairs.
+
+\textbf{Three regimes.} (i) \emph{Neutral}: pre-grasp states, where both instructions are
+achievable and no visual prior favours either, (ii) \emph{Conflict}: post-grasp states, where the arm
+already carries the object toward the demonstrated goal so the observation opposes the
+alternative command, (iii) \emph{Compositional}: trained versus never-demonstrated pairings. All ten
+LIBERO-Goal scenes contain the same seven objects, so novel pairings are physically executable.
+
+\textbf{Readouts.} For the first two regimes, \emph{directional IFR}: does commanding the
+non-demonstrated instruction push the prediction away from the demonstrated trajectory (chance
+$0.5$)? For the compositional regime, novel commands have no demonstration, so we score which
+\emph{destination anchor} the predicted net displacement points toward. Anchors are the mean
+final end-effector position of the demonstrations ending at each destination (sd
+$0.03$--$0.05$\,m, pairwise separation $0.19$--$0.57$\,m; the cabinet anchor agrees within
+$0.07$\,m across two different objects, so it tracks the destination rather than the task).
+
+\looseness=-1
+\textbf{Controls.} A competence gate (Sec.~\ref{sec:exp}); pinned flow-matching noise, so
+identical inputs give bit-identical actions (control passes at exactly $0.0$); a trained-pairing
+control for the compositional readout; and a fixed-state control holding the observation
+byte-identical while varying only the object word.
+
+\section{Experiments}
+\label{sec:exp}
+
+\textbf{Setup.} SmolVLA-450M~\citep{smolvla} on LIBERO-Goal~\citep{libero}, evaluated
+offline on stored demonstration states. Paired bootstrap, 10k resamples. We use SmolVLA
+because its small size makes exhaustive patching tractable on a single consumer GPU; the
+discrete action vocabulary of larger autoregressive VLAs such as
+OpenVLA~\citep{openvla} would further permit a direct action lens, which we discuss as future work.
+
+\textbf{Competence gate.} A chance-level instruction-following rate is equally consistent
+with a policy that ignores language and one whose predictions are noise, so before any grounding
+claim we check that the policy tracks these states at all. The check needs no extra forward
+passes. Writing $\hat{a}$ for the predicted 50-step chunk and $a$ for the demonstrated one at the
+same state,
+\[
+\rho \;=\;
+\frac{\operatorname{median}\lVert \hat{a}-a\rVert}{\operatorname{median}\lVert a'-a\rVert},
+\]
+where $a'$ is a chunk drawn from an \emph{unrelated} demonstration at the same stimulus states.
+The denominator is therefore what ``a plausible trajectory for this scene, but not this one''
+scores ($7.25$ over $n=50$ pairs here), which makes $\rho$ readable without a reference model:
+$\rho \ll 1$ tracks the specific demonstration, $\rho \approx 1$ is no better than an unrelated
+trajectory, and $\rho \geq 1$ is worse than one. We require $\rho < 0.70$ to run a checkpoint and
+treat $\rho \geq 1.05$ as broken or misaligned. Only 2 of 8 public LIBERO SmolVLA checkpoints
+pass, and all results below use those two\iflong~(Table~\ref{tab:screen})\fi. We report this as a result
+rather than housekeeping: it bears directly on the reproducibility of this literature.
+
+The gate was not tuned to the result it guards. It was added to diagnose the neutral and
+conflict nulls, and the released commit history records the screen and the selection of the two
+checkpoints 3 hours and 45 minutes before the compositional experiment was first written.
+
+\begin{table}[t]
+\caption{Grounding holds under neutral and conflicting conditions and breaks under composition.
+Compositional figures are the paired fixed-state control, which holds the observation
+byte-identical and varies only the object word, and are restricted to the three destinations
+that occur in \emph{both} arms. \texttt{top of the cabinet} is trained for both objects, so it
+contributes trained trials and no novel ones; including it inflates the gap to $+0.358$ and
+$+0.325$ (artifact~7, \S\ref{sec:artifacts}).}
+\label{tab:regimes}
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{llll}
+\toprule
+Regime & Readout & Checkpoint A & Checkpoint B \\
+\midrule
+Neutral ($n{=}400$)        & directional IFR & $0.745$ $[0.688, 0.801]$ & not run \\
+Conflict ($n{=}240$)       & directional IFR & $0.946$ $[0.916, 0.974]$ & $0.929$ $[0.898, 0.958]$ \\
+Compositional ($n{=}600$)  & destination gap & $+0.250$ $[0.180, 0.320]$ & $+0.193$ $[0.140, 0.250]$ \\
+\quad excluding the rack ($n{=}400$) & destination gap & $+0.215$ $[0.120, 0.310]$ & $+0.160$ $[0.065, 0.255]$ \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\textbf{Statistical unit.} The data are nested: a LIBERO \emph{episode} yields several
+stored \emph{states}; each state is evaluated under several \emph{instructions}; each
+evaluation gives one \emph{prediction}. Predictions from one episode share a scene, an object
+placement and near-adjacent timesteps, so they are not independent. Every interval reported
+here is a cluster bootstrap over \textbf{episodes} ($50$ per source task, resampled with
+replacement together with all of their predictions), $10{,}000$ resamples. Trial-level
+resampling gives visibly narrower intervals; clustering widens all of them and moves one cell
+(``the plate'' on checkpoint~A) from significant to not.
+
+We attach intervals to every quantity a claim rests on, and omit them elsewhere for space, so
+their absence is deliberate rather than selective. Three kinds of number appear without one:
+design constants that are not estimates at all (the gate thresholds, the four-way chance level
+of $0.25$, the $130$ sites); descriptive breakdowns whose inferential work is done by an
+accompanying test, such as per-site probe accuracies, which are judged against their own
+label-shuffled control, and the patching means, which are judged against
+Benjamini--Hochberg correction over the site family; and secondary figures quoted to
+characterise a pattern already established by an interval reported nearby. Every interval in
+the paper, including those in the appendix, is regenerated from the committed runs by
+\texttt{scripts/audit\_paper\_numbers.py}, which fails if any printed value drifts from what
+the data give.
+
+The Benjamini--Hochberg family for the patching sweep is the $130$ sites \emph{within a single
+run}: novel and control runs are corrected separately, and the two checkpoints are corrected
+separately, so no correction pools across conditions.
+
+\textbf{The failure is compositional, and not an artifact of one hard destination.}
+Table~\ref{tab:regimes}. Under direct visual--motor conflict the policy redirects on command;
+under an undemonstrated pairing it degrades sharply. The rack is the weakest destination even
+when trained ($0.31$--$0.33$), so we report the gap with it excluded as well: the effect
+survives at $+0.215$ and $+0.160$, the latter only just. The cleanest single cell holds the
+destination word fixed and varies only the object: ``the stove'', trained $0.890$ versus novel
+$0.560$, a gap of $+0.330$ $[0.210, 0.450]$. Per-destination gaps and their intervals are given
+in \S\ref{sec:extended}; ``the plate'' on checkpoint~A is the one cell whose interval includes
+zero ($+0.100$ $[-0.020, 0.220]$).
+
+\textbf{Errors are biased toward previously paired destinations.} When a novel command
+fails, the destination selected is more often one paired with that object during training than
+a uniform random choice among incorrect destinations would give.
+
+\emph{The null, explicitly.} For a trial naming destination $d$ with object $o$, the incorrect
+options are the three destinations other than $d$; the chance rate for that trial is the
+fraction of those three that appear with $o$ in training. We average this per-trial chance
+across errors and subtract. For $\textrm{bowl} \to \textrm{rack}$ the bowl was trained with all
+three other destinations, so that trial's chance is $1.00$ and it can contribute no evidence
+whatever the policy does; for the bottle, two of three, giving $0.67$. Pooled chance is
+$0.833$ against a raw rate of $0.944$. \textbf{The raw rate is therefore not the effect size};
+the excess is $+0.111$ $[0.073, 0.144]$ and $+0.098$ $[0.056, 0.134]$.
+
+\textbf{The behaviour is command-dependent.} That bias is modest, and it is not consistent
+with a \emph{fixed object-conditioned lookup}. Which destination the policy selects depends on
+which destination was named: the bottle commanded to ``the plate'' is scored as heading there
+on $0.450$ $[0.370, 0.530]$ of trials and to ``the stove'' on $0.04$; commanded to ``the
+stove'' those become $0.07$ and $0.560$ $[0.460, 0.660]$ (checkpoint~A, $n{=}100$ per cell; the
+corresponding diagonal on B is $0.340$ $[0.270, 0.410]$ and $0.670$ $[0.570, 0.770]$). The two
+intervals within a checkpoint do not overlap, so the shift with the command is resolved and not
+an artifact of the interval width. A policy whose destination depended only on the object would
+give the same distribution under both commands. This rules out that specific hypothesis; it
+does not rule out richer command-conditioned heuristics that fall short of composing the
+relation, and we do not claim otherwise. The exception is
+$\textrm{bowl} \to \textrm{rack}$, selected on $0.010$ $[0.000, 0.030]$ and $0.050$
+$[0.010, 0.100]$ of trials, the one pairing for which we see almost no evidence of successful
+composition.
+
+\textbf{Paraphrase: the effect survives, and exposes surface-form sensitivity.} Swapping the
+object word changes tokenisation and token count as well as meaning, so we repeated the test
+with the command paraphrased: ``move the bowl to the rack'' in place of ``put the bowl on the
+rack'', altering verb, preposition and length while naming the same object and destination.
+
+The compositional gap survives paraphrasing on both checkpoints: $+0.227$ $[0.170, 0.283]$ and
+$+0.150$ $[0.110, 0.187]$, against $+0.250$ and $+0.193$ under LIBERO's own phrasing. On
+checkpoint~A dependence on the named destination is if anything stronger ($53\%$ and $69\%$ for
+the bottle). The degradation is therefore not an artifact of one particular string.
+
+Paraphrasing does, however, reveal strong surface-form sensitivity on checkpoint~B, and it is
+destination-specific rather than general: accuracy on trained pairings \emph{rises} for ``the
+plate'' ($0.52 \to 0.77$) and ``the stove'' ($0.81 \to 0.93$) while collapsing for ``the rack''
+($0.31 \to 0.02$) and \texttt{top of the cabinet} ($0.875 \to 0.155$). Checkpoint~B was trained
+from scratch on this task set, and a policy that has learned particular strings rather than
+their content is what would produce this. Because \texttt{top of the cabinet} carries no novel
+trials it does not enter the compositional comparison at all; an earlier draft included it and
+read the resulting $-0.017$ as the whole comparison degrading, which is artifact~7
+(\S\ref{sec:artifacts}).
+
+\textbf{Two confounds this design does not remove.} An undemonstrated pairing is novel in
+two ways at once: it lacks a demonstrated \emph{meaning} and a demonstrated \emph{trajectory}.
+A policy that understood the command but could not generate a motor plan for it would produce
+the same degradation, and we do not separate the two.
+
+\textbf{Geometry alone does not account for the result.} The readout scores whether
+predicted motion heads toward a destination anchor, and in a fixed scene destination identity
+is correlated with geometry, so a policy conditioning only on where things are might reproduce
+the pattern. We tested this directly. A classifier given end-effector position, the distance
+and unit direction to every anchor, and object identity, but never the instruction, predicts
+the policy's own chosen destination at $0.546$ and $0.492$ on the two checkpoints, against
+majority-class floors of $0.496$ and $0.412$: geometry buys $5$ and $8$ percentage points over
+guessing the most frequent destination.
+
+More decisively, such a model returns a single prediction per state, whereas the policy is
+shown several instructions at each state and selects a different destination in $96\%$ and
+$95\%$ of them. That variation is the effect this paper reports, and no state-only account can
+produce any of it.
+
+\textbf{Causal patching does not localize it.} Patching all 130 sites
+($\{\textrm{vlm},\textrm{expert}\}\times L_{0..15}\times\{\textrm{resid\_pre},
+\textrm{attn\_out},\textrm{mlp\_out},\textrm{resid\_post}\}$) from a working run into a failing
+one yields an apparently clean picture: VLM influence decaying with depth, expert influence
+rising toward the output. It is an artifact of causal proximity. Running the identical sweep on a
+\emph{control} contrast, where both instructions are trained and there is no failure to
+recover, reproduces the same
+profile (Fig.~\ref{fig:sweep}). Novel minus control has mean $-0.056$ (median $-0.033$), and a
+second sweep on a different compute backend with a matched trial count gives $-0.041$ (median
+$-0.019$): the novel-specific effect is near zero and, if anything, negative at both. \textbf{0
+of 130 sites survive Benjamini--Hochberg correction} in any of the four runs.
+
+The observed profile follows from the architecture's intervention geometry. The action expert
+reads the backbone through \emph{per-layer} KV entries, so a patch at VLM layer $i$ reaches
+only cache entries $i{+}1 \ldots 15$: a patch at layer 2 propagates through thirteen downstream
+layers, one at layer 14 through none. The decay therefore tracks how much of the network sits
+downstream of the tap rather than how much instruction information survives to that depth. This
+confound can arise in any encoder--decoder policy whose decoder cross-attends per layer, and a
+profile reported without a matched control would there look graded and monotone while carrying
+no localization content. We have tested one architecture, so we state the mechanism as a
+hypothesis about intervention reachability rather than a general result.
+
+\textbf{Probing: encoded, but no replicable mechanism.} A linear probe trained on trained
+pairings and tested on novel ones, with a label-shuffled control at every site and a
+state-grouped split, decodes the named destination in the VLM at $1.00$ on both checkpoints
+(controls at chance). The instruction is encoded and survives the backbone, though this is
+close to definitional, since the destination word is present in the input tokens.
+
+Inside the \emph{action expert} the picture does not replicate (Fig.~\ref{fig:probe}). One
+checkpoint has 38 expert sites decoding novel pairings above $0.5$, peaking at $0.985$; the
+other has 2, with 29 sites \emph{below} $0.10$ against a chance level of $0.25$, reliably
+wrong rather than uninformative. \textbf{We therefore do not draw a readout-versus-encoding
+conclusion.} An earlier draft did, on one checkpoint alone.
+
+Systematic sub-chance decoding is unlikely to be noise: with four balanced classes it requires
+a consistent mapping to a wrong class. \emph{One hypothesis}, which we state without endorsing,
+is that the expert represents the destination the policy will actually move toward rather than
+the one named; a probe trained where the two coincide would then predict the former and be
+reliably wrong exactly where we observe it. We have not tested this; doing so means decoding
+the executed destination rather than the named one, and it should not be read as a mechanistic
+result.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.48\linewidth]{figures/fig2_sweep.pdf}
+\hfill
+\includegraphics[width=0.48\linewidth]{figures/fig3_probe.pdf}
+\caption{\textbf{Left:} patching recovery through the action expert for the novel contrast and
+for a control contrast in which there is no failure to recover. The control reproduces the same
+graded profile, so the profile does not indicate failure-specific localization; their
+difference is flat ($-0.056$; $0/130$ sites survive correction). \textbf{Right:} decoding
+accuracy for the named destination inside the action expert. It is decodable on one checkpoint
+and not the other, where decoding is systematically \emph{below} chance. The plots show
+decodability only; the checkpoint dependence prevents a stable mechanistic interpretation, and
+we draw none.}
+\label{fig:sweep}
+\label{fig:probe}
+\end{figure}
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+Grounding in this VLA does not fail globally; it degrades at composition. Under direct
+visual--motor conflict the policy still redirects on command. Under an undemonstrated pairing of
+familiar words it succeeds far less often, with errors biased toward the object's trained
+destinations, but it has not fallen back on a lookup, because which destination it chooses
+still depends on which one it was told. What we can support is evidence of \emph{partial} compositional
+competence, not a substitution policy and not an identified binding mechanism. Causal patching
+did not localize the degradation, and a matched control shows the sweep's apparent structure is
+proximity rather than mechanism; probing finds the destination decodable in the backbone but
+gives expert-level results that invert across checkpoints.
+
+\textbf{Limitations.} Effect sizes are moderate. Both competent checkpoints come from a
+single uploader, so replication is weak. LIBERO-Goal affords one object contrast
+($\textrm{bowl}$ versus $\textrm{wine bottle}$), so results generalise over states rather than
+referents; this is a property of a particular SmolVLA/LIBERO configuration, not a demonstrated
+property of VLAs.
+
+One confound stated in \S\ref{sec:exp} remains open: an untrained pairing is novel in meaning
+and in trajectory at once, so semantic composition failure and motor generation failure are not
+separated here. Resolving it needs a condition in which the two come apart. The geometric
+confound is addressed in \S\ref{sec:exp} rather than left open, though our null is a linear
+one, and a more expressive state-only model could close more of the gap.
+
+Evaluation is offline throughout: ``correct'' means directionally consistent with the named
+destination, not task success under closed-loop execution. Finally, the probe decodes the named
+\emph{destination}, which is present in the input tokens; decodability is not causal
+availability, and we have not shown that an object$\leftrightarrow$destination relation is
+represented at all.
+
+\iflong
+% These two sections are supporting material, not main content, and both target venues
+% exclude appendices from the page limit. Marking them as an appendix rather than leaving
+% them as numbered sections is what makes the same source fit VLM4RWD's 8 pages and leaves
+% RoboPAD's 9 with room, without cutting anything.
+\appendix
+\section{Seven measurement artifacts}
+\label{sec:artifacts}
+
+Several results in this paper had a predecessor that was wrong. We report them because six of
+the seven produced clean, statistically significant, entirely plausible numbers that would have
+survived review, and because the property that caught them generalises: each was exposed by a
+check \emph{capable of contradicting the headline}, never by re-reading code.
+
+\textbf{1. One-sided stimulus set.} The generator consumed task A's states before reaching
+task B, and callers never took enough pairs to get there, so 100\% of states came from the
+A-side task. The directional readout then only ever asked its question in one direction, and any
+asymmetry between the two instructions read as a grounding effect. It produced a striking
+destination-versus-object dissociation. \emph{Caught by} a second checkpoint returning the
+opposite, equally significant result on identical stimuli.
+
+\textbf{2. Inverted images.} LIBERO stores frames under MuJoCo's OpenGL convention. The
+policy saw upside-down scenes and scored no better than predicting an unrelated trajectory,
+while still yielding confident instruction-following numbers. \emph{Caught by} a competence
+gate, the ratio of prediction-to-demonstration distance against the distance between two
+unrelated demonstrations, which we now run before any experiment.
+
+\textbf{3. A reference that rewarded stalling.} The directional readout compared a 50-step
+predicted chunk against a \emph{single} demonstration action broadcast across all 50 steps,
+scoring a policy that stops as highly as one that follows the trajectory through. \emph{Caught
+by} asking what the metric would return for a degenerate policy.
+
+\textbf{4. A leaking probe split.} Each observation contributes eight examples (two objects
+$\times$ four destinations); splitting by example put near-identical activations in both train
+and test. Held-out accuracy read $1.000$ at \emph{every} site. \emph{Caught by} a site we could
+verify carries no signal: \texttt{expert.L0.resid\_pre} is byte-identical across instructions,
+so perfect decoding there is impossible. Grouping by observation dropped it to $0.400$, equal to
+its own shuffled control.
+
+\textbf{5. A transplant that moved the wrong thing.} The injected delta was taken between
+instructions differing in the \emph{object} word, so it encoded object identity alongside any
+binding; injecting it degraded behaviour monotonically with dose while a norm-matched random
+direction stayed near zero. Restricting to language-token positions localises this rather than
+removing it, since the object token sits inside the language block. No dose or position slice
+fixes it. \emph{Not yet fixed}: the design that would separate the two holds the words fixed and
+contrasts trials where the same novel instruction succeeds against trials where it fails.
+
+\textbf{6. A headline statistic with an $0.83$ floor.} We reported that $93$--$96\%$ of
+novel-command errors land on a destination the object was trained with, and read it as a
+substitution signature. The number is almost entirely determined by the design. For
+$\textrm{bowl} \to \textrm{rack}$, the bowl was trained on the other three destinations, so
+\emph{every} possible wrong answer is a trained one and that cell contributes $1.00$ whatever
+the policy does. Pooled chance is $0.833$; the excess is $+0.111$ $[0.073, 0.144]$.
+\emph{Caught by} writing down the null, asking what the statistic would read if the policy
+erred uniformly at random, which we had not done because the raw number looked decisive.
+The lesson is narrow and cheap: a proportion whose denominator is constrained by the stimulus
+design needs its chance level computed from that design, not assumed to be uniform.
+
+\textbf{7. An unmatched arm in the headline comparison.} The compositional gap was computed
+over all four destinations. But \texttt{top of the cabinet} is trained for \emph{both} objects,
+so it supplies $200$ trained trials and no novel ones: it cannot enter a trained-versus-novel
+comparison, and because the policy is unusually accurate there ($0.860$ and $0.875$) its
+presence raised the trained arm alone. The reported gap was $+0.358$ and $+0.325$; matched to
+the three destinations that occur in both arms it is $+0.250$ and $+0.193$. The effect survives,
+about a third smaller. The same error had a second consequence: it made the paraphrase control
+on checkpoint~B read as a total collapse ($-0.017$), when in fact the compositional gap there
+survives paraphrasing at $+0.150$ and what collapses is two specific destinations, one of which
+is the unmatched one. \emph{Caught by} a reader asking why Table~\ref{tab:regimes} and the
+per-destination appendix disagreed. The condition is easy to state and worth checking directly:
+every level of a grouping variable must appear in both arms of a difference, or the difference
+partly measures which levels are present.
+
+\textbf{What generalises.} A layer $\times$ component heatmap offers fewer opportunities to
+visibly contradict itself than a scalar does. We would now require, before interpreting any such
+map: a competence gate on the checkpoint, a matched control condition in which the effect being
+localized does not exist, a replication checkpoint, and, for any direction-based
+readout, conditioning on whether the instruction could move the action at all. That last one
+matters because a site where language \emph{cannot} matter looks identical to a site where
+language \emph{is ignored}.
+
+\section{Extended results}
+\label{sec:extended}
+
+\textbf{Per-destination compositional gaps.} The fixed-state control, which holds the
+observation byte-identical and varies only the object word, gives positive gaps in all six
+destination $\times$ checkpoint cells: the plate $+0.100 / +0.180$, the stove $+0.330 / +0.140$,
+the rack $+0.320 / +0.260$. These are the three destinations that occur in both arms, and
+Table~\ref{tab:regimes} reports their combined gap. The fourth destination,
+\texttt{top of the cabinet}, is trained for both objects and so has no novel trials to compare
+against; the policy is unusually accurate there ($0.860$ and $0.875$), which is why including
+its $200$ trained-only trials inflates the gap by roughly $0.11$ and $0.13$.
+
+\textbf{Determinism, and which backend to distrust.} Flow-matching noise is pinned and the
+instrumented forward is exercised against the stock implementation, so the sweep is
+deterministic within a backend. \emph{Across} backends it is not. Running the identical
+130-site sweep on CUDA and on Apple MPS, the same site can differ by up to $0.136$; the
+disagreement is largest at residual-stream sites (max $0.136$, mean $0.041$) and smaller at
+attention and MLP sites (max $0.078$ and $0.044$). Since the per-site effects we are testing
+are themselves of order $0.05$, MPS numbers cannot be trusted at the precision this analysis
+requires, and every result reported here comes from the CUDA runs. Anyone running
+interpretability sweeps on Apple silicon should measure this before trusting per-site numbers.
+
+\textbf{Conflict strength.} Binning the conflict regime by how far the demonstration has
+committed shows an apparent decline in the most-committed bin ($0.950 \to 0.900$ and
+$0.975 \to 0.783$). This is a metric artifact rather than an effect: instruction sensitivity
+collapses in the same bin, and where the instruction barely moves the action its \emph{direction}
+is estimated from almost no signal. Splitting that bin by sensitivity separates them; at high
+sensitivity, accuracy is $1.000$ and $0.949$.
+
+\textbf{Checkpoint screen.} Table~\ref{tab:screen} gives $\rho$ for every public LIBERO
+SmolVLA checkpoint we could find. Two pass, one is marginal, four score worse than an unrelated
+trajectory, and one fails to load. Two of the four failures are expected rather than surprising:
+one is trained on LIBERO-Spatial and one on a single pick task, so neither is a claim about
+LIBERO-Goal, and we list them only because a reader searching for a usable checkpoint will find
+them. The remaining two are general LIBERO releases and their scores are not a preprocessing
+artifact on our side: re-running both across all four image orientations leaves them near $1.8$
+regardless, and \texttt{bicmol} is flat to three decimals across orientations, meaning the image
+barely influences its output. The two checkpoints we use differ in training regime, one
+finetuning \texttt{smolvla\_base} and one training from scratch, but share an uploader and
+plausibly a data pipeline; agreement between them is a weak replication, not two independent
+sources.
+
+\begin{table}[h]
+\caption{Competence gate over eight public LIBERO SmolVLA checkpoints. $\rho$ is the ratio
+defined in \S\ref{sec:exp}; the denominator, the median distance between two unrelated
+demonstrated chunks, is $7.25$. Lower is better and $\rho \geq 1$ means the prediction is
+further from the demonstration than an unrelated demonstration is.}
+\label{tab:screen}
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{llr l}
+\toprule
+Checkpoint & Trained on & $\rho$ & Verdict \\
+\midrule
+\texttt{k1000dai/smolvla\_libero\_scratch\_80k} & LIBERO & $0.632$ & competent (used) \\
+\texttt{k1000dai/smolvla\_libero\_finetune} & LIBERO & $0.654$ & competent (used) \\
+\texttt{k1000dai/\ldots-pick-up-the-black-bowl-20k} & one task & $0.808$ & marginal \\
+\texttt{bicmol/smolvla-libero} & LIBERO & $1.673$ & worse than baseline \\
+\texttt{AustineJohnBreaker/\ldots libero\_spatial} & LIBERO-Spatial & $1.676$ & worse than baseline \\
+\texttt{xainyuxxx/my-smolvla-libero} & LIBERO & $1.732$ & worse than baseline \\
+\texttt{msv6/smolvla\_meta\_libero} & LIBERO & $1.868$ & worse than baseline \\
+\texttt{jadechoghari/smolvla-libero-ckpts} & LIBERO & n/a & config fails to load \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+\fi
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\end{document}
